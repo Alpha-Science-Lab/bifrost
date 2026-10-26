@@ -1,0 +1,16 @@
+build/
+
+*.log
+*.pb
+*.jou
+
+*.vcd
+*.wdb
+
+xsim.dir/
+.Xil/
+
+xsim.codeCov/
+xsim.covdb/
+
+coverage_report/
