@@ -1,21 +1,29 @@
-class scoreboard;
+class scrbd;
 
-  mailbox #(int) mon2scb;
-  int expected_count;
-  int observed_count;
+  mailbox #(trnxt) mn_scb;
+  trnxt trn;
+  int expected_count, observed_count;
+  int err_cnt, total;
 
-  function new(mailbox #(int) mon2scb);
-    this.mon2scb = mon2scb;
+  function new(mailbox #(trnxt) mn_scb);
+    this.mn_scb = mn_scb;
     expected_count = 0;
     observed_count = 0;
+    err_cnt = 0;
+    total = 0;
   endfunction
 
-  task automatic check();
-    int value;
+  virtual task automatic check();
     forever begin
-      mon2scb.get(value);
-      observed_count = value;
+      mn_scb.get(trn);
+      total++;
+      observed_count = trn.observed_done_count;
+      if (!trn.intr_seen) begin
+        err_cnt++;
+        $error("Scoreboard got transaction without interrupt indication");
+      end
       if (observed_count != expected_count + 1) begin
+        err_cnt++;
         $error("DMA completion mismatch: got %0d, expected %0d", observed_count, expected_count + 1);
       end
       expected_count = observed_count;
@@ -23,7 +31,7 @@ class scoreboard;
   endtask
 
   task automatic report();
-    $display("scoreboard: observed %0d DMA completions", observed_count);
+    $display("scoreboard: total=%0d observed=%0d errors=%0d", total, observed_count, err_cnt);
   endtask
 
-endclass : scoreboard
+endclass : scrbd

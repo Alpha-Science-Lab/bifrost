@@ -35,15 +35,23 @@ module tb_top;
   end
 
   initial begin
-    test_base test;
-    test = new(intf, wb_cfg);
-    test.run_test();
+    test_base test_dma_trn;
+    test_reg_acc test_reg;
+    test_inv_acc test_inv;
+    test_dma_trn = new(intf, wb_cfg);
+    test_reg = new(intf, wb_cfg);
+    test_inv = new(intf, wb_cfg);
+    test_reg.run_test();
+    test_inv.run_test();
+    test_dma_trn.run_test();
     #5000;
     $finish;
   end
 
 endmodule : tb_top
 
+
+/* Dummy wishbone ram to test DMA transaction on*/
 module wb_ram #(
   parameter int DEPTH = 256
 )(
@@ -70,13 +78,15 @@ module wb_ram #(
       wb.ack <= 1'b0;
       wb.err <= 1'b0;
 
-      if (wb.cyc && wb.stb) begin
+      if (wb.cyc && wb.stb && wb.adr < DEPTH) begin
         wb.ack <= 1'b1;
         if (wb.we) begin
           mem[wb.adr[15:2]] <= wb.dat_mosi;
         end else begin
           wb.dat_miso <= mem[wb.adr[15:2]];
         end
+      end else begin
+        wb.err <= 1'b1;
       end
     end
   end

@@ -8,6 +8,8 @@ class trnxt;
   rand logic [31:0] len;
   rand logic [2:0] prio;
   rand bit irq_en;
+  int unsigned observed_done_count;
+  bit intr_seen;
 
   constraint c_channel {
     channel < NUM_CHANNELS;
@@ -25,5 +27,19 @@ class trnxt;
   constraint c_prio {
     prio inside {[3'd0:3'd7]};
   }
+
+  function trnxt clone();
+    trnxt c;
+    c = new();
+    c.channel = channel;
+    c.src = src;
+    c.dst = dst;
+    c.len = len;
+    c.prio = prio;
+    c.irq_en = irq_en;
+    c.observed_done_count = observed_done_count;
+    c.intr_seen = intr_seen;
+    return c;
+  endfunction
 
 endclass : trnxt

@@ -4,6 +4,7 @@ package tb_params;
   localparam int CLOCK_PERIOD = 10;
   localparam int MEM_DEPTH = 256;
   localparam logic [31:0] START_ADDRESS = 32'h0000_1000;
+  localparam logic [31:0] SIZE          = 32'd64;
 
   localparam logic [31:0] REG_CTRL     = 32'd0;
   localparam logic [31:0] REG_SRC_ADDR = 32'd1;

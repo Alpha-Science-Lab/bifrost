@@ -138,6 +138,7 @@ module sim_top;
 endmodule
 
 
+/* Dummy wishbone ram to test DMA transaction on*/
 module wb_ram #(
   parameter int DEPTH = 256
 )(
@@ -167,7 +168,7 @@ module wb_ram #(
       wb.ack <= 1'b0;
       wb.err <= 1'b0;
 
-      if (wb.cyc && wb.stb) begin
+      if (wb.cyc && wb.stb wb.adr < DEPTH) begin
         wb.ack <= 1'b1;
         if (wb.we) begin
           mem[wb.adr[15:2]] <= wb.dat_mosi;
@@ -175,6 +176,8 @@ module wb_ram #(
         else begin
           wb.dat_miso <= mem[wb.adr[15:2]];
         end
+      end else begin
+        wb.err <= 1'b1;
       end
     end
 

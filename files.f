@@ -19,6 +19,8 @@ fv/components/scrbd.sv
 fv/components/envr.sv
 fv/coverage/cvrg.sv
 fv/tests/test_base.sv
+fv/tests/test_reg_acc.sv
+fv/tests/test_inv_acc.sv
 
 # simulation top
 fv/tb_top.sv

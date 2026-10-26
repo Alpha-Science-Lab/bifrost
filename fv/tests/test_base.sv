@@ -3,21 +3,45 @@ import tb_params::*;
 class test_base;
 
   envr env;
-  mailbox #(trnxt) gnr_drv;
+  semaphore sem;
+  int num_seq_gnr = 10;
 
   function new(virtual tb_intf intf, virtual wishbone_interface wb_cfg);
-    env = new(intf, wb_cfg);
-    gnr_drv = env.gnr_drv;
+    sem = new(1);
+    env = new(intf, wb_cfg, sem);
+
+    fork
+      env.ag.drv.drive();
+      env.ag.mn.run();
+      env.scr.check();
+    join_none
   endfunction
 
-  task automatic run_test();
-    int count;
+  virtual task automatic reset(input int cycles);
+    sem.get(1);
+    env.ag.drv.reset(cycles);
+  endtask
 
-    env.run();
-    env.ag.gnr.gen(4);
-    repeat (50) @(posedge env.ag.drv.intf.clk);
+  virtual task automatic letpass(input int cycles);
+    while (cycles > 0) begin
+      @(posedge env.ag.drv.intf.clk);
+      cycles--;
+    end
+  endtask
+
+  virtual task automatic run_dma_sweep();
+    num_seq_gnr = NUM_CHANNELS * 3;
+    env.ag.gnr.gen(num_seq_gnr);
+  endtask
+
+  virtual task automatic run_test();
+    reset(10);
+
+    run_dma_sweep();
+    
+    letpass(100);
     env.scr.report();
-    $display("CRV DMA test complete: %0d generator transactions", 4);
+    $display("CRV DMA test complete: generator-driver-monitor-scoreboard flow verified");
   endtask
 
 endclass : test_base

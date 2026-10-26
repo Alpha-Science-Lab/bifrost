@@ -3,25 +3,17 @@ import tb_params::*;
 class envr;
 
   agnt ag;
-  scoreboard scr;
+  scrbd scr;
   cvrg cvr;
   mailbox #(trnxt) gnr_drv;
-  mailbox #(int) mn_scb;
+  mailbox #(trnxt) mn_scb;
 
-  function new(virtual tb_intf intf, virtual wishbone_interface wb_cfg);
+  function new(virtual tb_intf intf, virtual wishbone_interface wb_cfg, semaphore sem);
     gnr_drv = new();
     mn_scb = new();
-    ag = new(intf, wb_cfg, gnr_drv, mn_scb);
+    ag = new(intf, wb_cfg, gnr_drv, mn_scb, sem);
     scr = new(mn_scb);
-    cvr = new(intf);
+    cvr = new(intf, wb_cfg);
   endfunction
-
-  task automatic run();
-    fork
-      ag.drv.drive();
-      ag.mn.run();
-      scr.check();
-    join_none
-  endtask
 
 endclass : envr
