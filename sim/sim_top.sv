@@ -126,21 +126,34 @@ module sim_top;
     //  - channel 0 and 1 share the same priority, so round-robin decides order
     //  - channel 2 has a higher priority than channel 0/1, so it should win first
     //  - the aggregated intr output should go high when any enabled channel completes
-    dma_program_channel(0, 32'd0,   32'd64,  32'd4, 3'd2);
-    dma_program_channel(1, 32'd8,   32'd128, 32'd3, 3'd2);
-    dma_program_channel(2, 32'd16,  32'd192, 32'd2, 3'd5);
+    dma_program_channel(0, 32'd0,   32'd16,  32'd4, 3'd2);
+    dma_program_channel(1, 32'd2,   32'd32,  32'd3, 3'd2);
+    dma_program_channel(2, 32'd4,   32'd48,  32'd2, 3'd5);
 
     dma_start_channel(0, 1'b1);
     dma_start_channel(1, 1'b1);
     dma_start_channel(2, 1'b1);
 
     wait (intr);
-    wait (u_dma.dma_done[0] && u_dma.dma_done[1] && u_dma.dma_done[2]);
+    while (!(u_dma.dma_done[0] && u_dma.dma_done[1] && u_dma.dma_done[2])) begin
+      @(posedge clk);
+    end
+    @(posedge clk);
     $display("DMA interrupt asserted after completion of an enabled channel");
     $display("ch0 status=%0d ch1 status=%0d ch2 status=%0d", u_dma.reg_status[0], u_dma.reg_status[1], u_dma.reg_status[2]);
 
     if (u_dma.dma_error[0] || u_dma.dma_error[1] || u_dma.dma_error[2]) begin
       $fatal(1, "Unexpected DMA error flag asserted");
+    end
+
+    for (int i = 16; i < 20; i++) begin
+      $display("mem[%0d] = 0x%08x", i, u_src_mem.mem[i]);
+    end
+    for (int i = 32; i < 35; i++) begin
+      $display("mem[%0d] = 0x%08x", i, u_src_mem.mem[i]);
+    end
+    for (int i = 48; i < 50; i++) begin
+      $display("mem[%0d] = 0x%08x", i, u_src_mem.mem[i]);
     end
 
     // ch0: src 0x00..0x0C -> dst 0x40..0x4C (4 words)
@@ -179,8 +192,15 @@ module wb_ram #(
 
   localparam int INDEX_WIDTH = $clog2(DEPTH);
   logic [31:0] mem [0:DEPTH-1];
-  logic [31:0] word_idx;
-  logic req_valid;
+
+  typedef enum logic [1:0] {
+    EXPECT_READ,
+    ACK_READ,
+    EXPECT_WRITE,
+    ACK_WRITE
+  } ram_state_t;
+
+  ram_state_t ram_state;
 
   initial begin
     for (int i = 0; i < DEPTH; i++) begin
@@ -194,27 +214,51 @@ module wb_ram #(
     mem[5] = 32'd606;
   end
 
-  always_comb begin
-    if (rst) begin
-      wb.ack = 1'b0;
-      wb.err = 1'b0;
-      wb.dat_miso = '0;
+  always_ff @(posedge clk) begin
+    if (rst || !wb.cyc) begin
+      wb.ack      <= 1'b0;
+      wb.err      <= 1'b0;
+      wb.dat_miso <= '0;
+      ram_state   <= EXPECT_READ;
     end else begin
-      wb.ack = wb.cyc && wb.stb && req_valid;
-      wb.err = wb.cyc && wb.stb && !req_valid;
-      wb.dat_miso = (req_valid) ? mem[word_idx[INDEX_WIDTH-1:0]] : '0;
-    end
-  end
+      wb.ack      <= 1'b0;
+      wb.err      <= 1'b0;
 
-  always_comb begin
-    word_idx = (wb.adr >> 2);
-    req_valid = (word_idx < DEPTH);
-  end
+      case (ram_state)
+        EXPECT_READ: begin
+          if (wb.cyc && wb.stb && !wb.we) begin
+            if (wb.adr < DEPTH) begin
+              wb.ack      <= 1'b1;
+              wb.dat_miso <= mem[wb.adr[INDEX_WIDTH-1:0]];
+              ram_state   <= ACK_READ;
+            end else begin
+              wb.err    <= 1'b1;
+              ram_state <= ACK_READ;
+            end
+          end
+        end
 
-  always_ff @(posedge clk)
-  begin
-    if (!rst && wb.cyc && wb.stb && wb.we && req_valid) begin
-      mem[word_idx[INDEX_WIDTH-1:0]] <= wb.dat_mosi;
+        ACK_READ: begin
+          ram_state <= EXPECT_WRITE;
+        end
+
+        EXPECT_WRITE: begin
+          if (wb.cyc && wb.stb && wb.we) begin
+            if (wb.adr < DEPTH) begin
+              wb.ack    <= 1'b1;
+              mem[wb.adr[INDEX_WIDTH-1:0]] <= wb.dat_mosi;
+              ram_state <= ACK_WRITE;
+            end else begin
+              wb.err    <= 1'b1;
+              ram_state <= ACK_WRITE;
+            end
+          end
+        end
+
+        ACK_WRITE: begin
+          ram_state <= EXPECT_READ;
+        end
+      endcase
     end
   end
 

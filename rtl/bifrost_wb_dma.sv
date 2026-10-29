@@ -210,19 +210,14 @@ module bifrost_wb_dma #(
           dma.we      <= 1'b0;
 
           if (active_valid) begin
-            logic [3:0] rr_after;
-            rr_after = active_channel + 4'd1;
             current_channel <= active_channel;
-            if (rr_after >= 4'd8) begin
-              rr_after = '0;
-            end
 
             if (reg_len[active_channel] == 32'd0) begin
               dma_done[active_channel]  <= 1'b1;
               dma_busy[active_channel]  <= 1'b0;
               dma_error[active_channel] <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= rr_after[2:0];
+              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
               state                     <= DMA_DONE;
             end else begin
               src_ptr[active_channel]    <= reg_src_addr[active_channel];
@@ -232,7 +227,7 @@ module bifrost_wb_dma #(
               dma_done[active_channel]   <= 1'b0;
               dma_error[active_channel]  <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= rr_after[2:0];
+              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
               state                     <= DMA_READ;
             end
           end
@@ -299,13 +294,8 @@ module bifrost_wb_dma #(
           dma.we      <= 1'b0;
 
           if (!start_req[current_channel]) begin
-            logic [3:0] rr_after;
             dma_busy[current_channel] <= 1'b0;
-            rr_after = current_channel + 4'd1;
-            if (rr_after >= 4'd8) begin
-              rr_after = '0;
-            end
-            rr_cursor <= rr_after[2:0];
+            rr_cursor <= (current_channel == 3'd7) ? 3'd0 : (current_channel + 3'd1);
             state     <= DMA_IDLE;
           end
         end
