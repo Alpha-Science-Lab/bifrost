@@ -3,20 +3,20 @@
  *
  * Wishbone DMA controller with 8 independent channels, per-channel
  * priority control, and round-robin arbitration among equal-priority
- * requests.
+ * requests
  *
  * The block presents a configuration window to the host through a Wishbone
  * slave interface and issues transfer traffic over a dedicated Wishbone master
  * interface. Each channel owns its own source address, destination address,
- * transfer length, interrupt enable, and completion status.
+ * transfer length, interrupt enable, and completion status
  *
  * Register access is word-addressed and starts at START_ADDRESS over a window
- * of SIZE 32-bit registers.
+ * of SIZE 32-bit registers
  */
 
 module bifrost_wb_dma #(
   parameter bit [31:0] START_ADDRESS = 32'h0012_0300,
-  parameter bit [31:0] SIZE          = 32'd64
+  parameter bit [31:0] SIZE          = 32'h40
 )(
   input logic clk,
   input logic rst,
@@ -27,12 +27,14 @@ module bifrost_wb_dma #(
 );
 
   localparam int NUM_CHANNELS = 8;
-  localparam int REG_CTRL     = 0;
-  localparam int REG_SRC_ADDR = 1;
-  localparam int REG_DST_ADDR = 2;
-  localparam int REG_LEN      = 3;
-  localparam int REG_STATUS   = 4;
-  localparam int REG_PRIORITY = 5;
+  localparam int PRIORITY_WIDTH = 3;
+
+  localparam logic [31:0] REG_CTRL     = 32'd0;
+  localparam logic [31:0] REG_SRC_ADDR = 32'd1;
+  localparam logic [31:0] REG_DST_ADDR = 32'd2;
+  localparam logic [31:0] REG_LEN      = 32'd3;
+  localparam logic [31:0] REG_STATUS   = 32'd4;
+  localparam logic [31:0] REG_PRIORITY = 32'd5;
 
   typedef enum logic [2:0] {
     DMA_IDLE,
@@ -70,13 +72,13 @@ module bifrost_wb_dma #(
   logic [2:0] current_channel;
   dma_state_t state;
 
-  // Address decode for the local register window.
+  // Address decode for the local register window
   assign addr = wb.adr - START_ADDRESS;
   assign err = (wb.adr < START_ADDRESS) || (wb.adr >= (START_ADDRESS + SIZE));
   assign wr_en = wb.cyc & wb.stb & wb.we & ~err;
 
   always_comb begin
-    // Aggregate per-channel completion interrupts into one CPU-visible signal.
+    // Aggregate per-channel completion interrupts into one CPU-visible signal
     intr = 1'b0;
     for (int i = 0; i < NUM_CHANNELS; i++) begin
       intr |= (irq_en[i] & dma_done[i]);
@@ -86,41 +88,41 @@ module bifrost_wb_dma #(
     channel_sel = '0;
     reg_sel     = '0;
 
-    // Decode channel/register indices for both read and write accesses.
+    // Decode the channel number and the register offset inside that channel
+    // This must apply to both reads and writes
     if (wb.cyc && wb.stb && !err) begin
       channel_sel = addr[5:3];
       reg_sel     = addr[2:0];
-    end
 
-    // Decode the channel number and the register offset inside that channel.
-    if (wb.cyc && wb.stb && !wb.we && !err) begin
-      case (reg_sel)
-        REG_CTRL:     wb.dat_miso = {28'b0, irq_en[channel_sel], dma_done[channel_sel], dma_busy[channel_sel], 1'b0};
-        REG_SRC_ADDR: wb.dat_miso = reg_src_addr[channel_sel];
-        REG_DST_ADDR: wb.dat_miso = reg_dst_addr[channel_sel];
-        REG_LEN:      wb.dat_miso = reg_len[channel_sel];
-        REG_STATUS:   wb.dat_miso = reg_status[channel_sel];
-        REG_PRIORITY: wb.dat_miso = {29'b0, channel_priority[channel_sel]};
-        default:      wb.dat_miso = 32'h0;
-      endcase
+      if (!wb.we) begin
+        case (reg_sel)
+          REG_CTRL:     wb.dat_miso = {28'b0, irq_en[channel_sel], dma_done[channel_sel], dma_busy[channel_sel], 1'b0};
+          REG_SRC_ADDR: wb.dat_miso = reg_src_addr[channel_sel];
+          REG_DST_ADDR: wb.dat_miso = reg_dst_addr[channel_sel];
+          REG_LEN:      wb.dat_miso = reg_len[channel_sel];
+          REG_STATUS:   wb.dat_miso = reg_status[channel_sel];
+          REG_PRIORITY: wb.dat_miso = {29'b0, channel_priority[channel_sel]};
+          default:      wb.dat_miso = 32'h0;
+        endcase
+      end
     end
   end
 
   always_comb begin
     // Choose which channel is allowed to run next:
-    // # highest priority among requests
-    // # round-robin ordering within the same priority level
+    // #1 highest priority among requests
+    // #2 round-robin ordering within the same priority level
     active_valid = 1'b0;
     active_channel = '0;
 
     for (int pr = 7; pr >= 0; pr--) begin
       for (int i = 0; i < NUM_CHANNELS; i++) begin
-        int unsigned rr_index;
+        logic [3:0] rr_index;
         logic [2:0] idx;
 
-        rr_index = int'(rr_cursor) + i;
-        if (rr_index >= NUM_CHANNELS) begin
-          rr_index = rr_index - NUM_CHANNELS;
+        rr_index = rr_cursor + i;
+        if (rr_index >= 4'd8) begin
+          rr_index = rr_index - 4'd8;
         end
         idx = rr_index[2:0];
 
@@ -198,8 +200,8 @@ module bifrost_wb_dma #(
 
       case (state)
         DMA_IDLE: begin
-          // The arbiter has selected a channel. Load its source/destination
-          // pointers and begin the transfer sequence.
+          // The arbiter has selected a channel, load its source/destination
+          // pointers and begin the transfer sequence
           dma.adr     <= '0;
           dma.sel     <= 4'hF;
           dma.dat_mosi <= '0;
@@ -208,14 +210,19 @@ module bifrost_wb_dma #(
           dma.we      <= 1'b0;
 
           if (active_valid) begin
+            logic [3:0] rr_after;
+            rr_after = active_channel + 4'd1;
             current_channel <= active_channel;
+            if (rr_after >= 4'd8) begin
+              rr_after = '0;
+            end
 
             if (reg_len[active_channel] == 32'd0) begin
               dma_done[active_channel]  <= 1'b1;
               dma_busy[active_channel]  <= 1'b0;
               dma_error[active_channel] <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
+              rr_cursor                 <= rr_after[2:0];
               state                     <= DMA_DONE;
             end else begin
               src_ptr[active_channel]    <= reg_src_addr[active_channel];
@@ -225,7 +232,7 @@ module bifrost_wb_dma #(
               dma_done[active_channel]   <= 1'b0;
               dma_error[active_channel]  <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
+              rr_cursor                 <= rr_after[2:0];
               state                     <= DMA_READ;
             end
           end
@@ -233,7 +240,7 @@ module bifrost_wb_dma #(
 
         DMA_READ: begin
           // Read one word from the source address and hold it for the write
-          // phase of the same transfer.
+          // phase of the same transfer
           dma.adr     <= src_ptr[current_channel];
           dma.sel     <= 4'hF;
           dma.dat_mosi <= '0;
@@ -241,10 +248,10 @@ module bifrost_wb_dma #(
           dma.stb     <= 1'b1;
           dma.we      <= 1'b0;
 
-          if (dma.ack && !dma.we) begin
+          if (dma.ack) begin
             dma_data <= dma.dat_miso;
             state    <= DMA_WRITE;
-          end else if (dma.err && !dma.we) begin
+          end else if (dma.err) begin
             dma_busy[current_channel]  <= 1'b0;
             dma_done[current_channel]  <= 1'b0;
             dma_error[current_channel] <= 1'b1;
@@ -254,7 +261,7 @@ module bifrost_wb_dma #(
 
         DMA_WRITE: begin
           // Write the previously captured data to the destination address and
-          // advance the source/destination pointers for the next beat.
+          // advance the source/destination pointers for the next beat
           dma.adr     <= dst_ptr[current_channel];
           dma.sel     <= 4'hF;
           dma.dat_mosi <= dma_data;
@@ -262,10 +269,9 @@ module bifrost_wb_dma #(
           dma.stb     <= 1'b1;
           dma.we      <= 1'b1;
 
-          if (dma.ack && dma.we) begin
-            // This DMA transfers one 32-bit beat per transaction.
-            src_ptr[current_channel]   <= src_ptr[current_channel] + 32'd4;
-            dst_ptr[current_channel]   <= dst_ptr[current_channel] + 32'd4;
+          if (dma.ack) begin
+            src_ptr[current_channel]   <= src_ptr[current_channel] + 1'b1;
+            dst_ptr[current_channel]   <= dst_ptr[current_channel] + 1'b1;
             remaining[current_channel] <= remaining[current_channel] - 1'b1;
 
             if (remaining[current_channel] == 32'd1) begin
@@ -276,7 +282,7 @@ module bifrost_wb_dma #(
             end else begin
               state <= DMA_READ;
             end
-          end else if (dma.err && dma.we) begin
+          end else if (dma.err) begin
             dma_busy[current_channel]  <= 1'b0;
             dma_done[current_channel]  <= 1'b0;
             dma_error[current_channel] <= 1'b1;
@@ -293,8 +299,13 @@ module bifrost_wb_dma #(
           dma.we      <= 1'b0;
 
           if (!start_req[current_channel]) begin
+            logic [3:0] rr_after;
             dma_busy[current_channel] <= 1'b0;
-            rr_cursor <= (current_channel == 3'd7) ? 3'd0 : (current_channel + 3'd1);
+            rr_after = current_channel + 4'd1;
+            if (rr_after >= 4'd8) begin
+              rr_after = '0;
+            end
+            rr_cursor <= rr_after[2:0];
             state     <= DMA_IDLE;
           end
         end
@@ -305,4 +316,5 @@ module bifrost_wb_dma #(
       endcase
     end
   end
+
 endmodule
