@@ -27,14 +27,12 @@ module bifrost_wb_dma #(
 );
 
   localparam int NUM_CHANNELS = 8;
-  localparam int PRIORITY_WIDTH = 3;
-
-  localparam logic [31:0] REG_CTRL     = 32'd0;
-  localparam logic [31:0] REG_SRC_ADDR = 32'd1;
-  localparam logic [31:0] REG_DST_ADDR = 32'd2;
-  localparam logic [31:0] REG_LEN      = 32'd3;
-  localparam logic [31:0] REG_STATUS   = 32'd4;
-  localparam logic [31:0] REG_PRIORITY = 32'd5;
+  localparam int REG_CTRL     = 0;
+  localparam int REG_SRC_ADDR = 1;
+  localparam int REG_DST_ADDR = 2;
+  localparam int REG_LEN      = 3;
+  localparam int REG_STATUS   = 4;
+  localparam int REG_PRIORITY = 5;
 
   typedef enum logic [2:0] {
     DMA_IDLE,
@@ -69,6 +67,7 @@ module bifrost_wb_dma #(
   logic [2:0] rr_cursor;
   logic [2:0] active_channel;
   logic active_valid;
+  logic [2:0] current_channel;
   dma_state_t state;
 
   // Address decode for the local register window.
@@ -87,11 +86,14 @@ module bifrost_wb_dma #(
     channel_sel = '0;
     reg_sel     = '0;
 
-    // Decode the channel number and the register offset inside that channel.
-    if (wb.cyc && wb.stb && !wb.we && !err) begin
+    // Decode channel/register indices for both read and write accesses.
+    if (wb.cyc && wb.stb && !err) begin
       channel_sel = addr[5:3];
       reg_sel     = addr[2:0];
+    end
 
+    // Decode the channel number and the register offset inside that channel.
+    if (wb.cyc && wb.stb && !wb.we && !err) begin
       case (reg_sel)
         REG_CTRL:     wb.dat_miso = {28'b0, irq_en[channel_sel], dma_done[channel_sel], dma_busy[channel_sel], 1'b0};
         REG_SRC_ADDR: wb.dat_miso = reg_src_addr[channel_sel];
@@ -106,19 +108,19 @@ module bifrost_wb_dma #(
 
   always_comb begin
     // Choose which channel is allowed to run next:
-    // 1) highest priority among requests
-    // 2) round-robin ordering within the same priority level
+    // # highest priority among requests
+    // # round-robin ordering within the same priority level
     active_valid = 1'b0;
     active_channel = '0;
 
     for (int pr = 7; pr >= 0; pr--) begin
       for (int i = 0; i < NUM_CHANNELS; i++) begin
-        logic [3:0] rr_index;
+        int unsigned rr_index;
         logic [2:0] idx;
 
-        rr_index = rr_cursor + i;
-        if (rr_index >= 4'd8) begin
-          rr_index = rr_index - 4'd8;
+        rr_index = int'(rr_cursor) + i;
+        if (rr_index >= NUM_CHANNELS) begin
+          rr_index = rr_index - NUM_CHANNELS;
         end
         idx = rr_index[2:0];
 
@@ -164,6 +166,7 @@ module bifrost_wb_dma #(
 
       dma_data    <= '0;
       rr_cursor   <= '0;
+      current_channel <= '0;
       state       <= DMA_IDLE;
     end else begin
       wb.ack <= wb.cyc && wb.stb && !wb.ack;
@@ -205,18 +208,14 @@ module bifrost_wb_dma #(
           dma.we      <= 1'b0;
 
           if (active_valid) begin
-            logic [3:0] rr_after;
-            rr_after = active_channel + 4'd1;
-            if (rr_after >= 4'd8) begin
-              rr_after = '0;
-            end
+            current_channel <= active_channel;
 
             if (reg_len[active_channel] == 32'd0) begin
               dma_done[active_channel]  <= 1'b1;
               dma_busy[active_channel]  <= 1'b0;
               dma_error[active_channel] <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= rr_after[2:0];
+              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
               state                     <= DMA_DONE;
             end else begin
               src_ptr[active_channel]    <= reg_src_addr[active_channel];
@@ -226,7 +225,7 @@ module bifrost_wb_dma #(
               dma_done[active_channel]   <= 1'b0;
               dma_error[active_channel]  <= 1'b0;
               start_req[active_channel]  <= 1'b0;
-              rr_cursor                 <= rr_after[2:0];
+              rr_cursor                 <= (active_channel == 3'd7) ? 3'd0 : (active_channel + 3'd1);
               state                     <= DMA_READ;
             end
           end
@@ -235,20 +234,20 @@ module bifrost_wb_dma #(
         DMA_READ: begin
           // Read one word from the source address and hold it for the write
           // phase of the same transfer.
-          dma.adr     <= src_ptr[active_channel];
+          dma.adr     <= src_ptr[current_channel];
           dma.sel     <= 4'hF;
           dma.dat_mosi <= '0;
           dma.cyc     <= 1'b1;
           dma.stb     <= 1'b1;
           dma.we      <= 1'b0;
 
-          if (dma.ack) begin
+          if (dma.ack && !dma.we) begin
             dma_data <= dma.dat_miso;
             state    <= DMA_WRITE;
-          end else if (dma.err) begin
-            dma_busy[active_channel]  <= 1'b0;
-            dma_done[active_channel]  <= 1'b0;
-            dma_error[active_channel] <= 1'b1;
+          end else if (dma.err && !dma.we) begin
+            dma_busy[current_channel]  <= 1'b0;
+            dma_done[current_channel]  <= 1'b0;
+            dma_error[current_channel] <= 1'b1;
             state                    <= DMA_DONE;
           end
         end
@@ -256,30 +255,31 @@ module bifrost_wb_dma #(
         DMA_WRITE: begin
           // Write the previously captured data to the destination address and
           // advance the source/destination pointers for the next beat.
-          dma.adr     <= dst_ptr[active_channel];
+          dma.adr     <= dst_ptr[current_channel];
           dma.sel     <= 4'hF;
           dma.dat_mosi <= dma_data;
           dma.cyc     <= 1'b1;
           dma.stb     <= 1'b1;
           dma.we      <= 1'b1;
 
-          if (dma.ack) begin
-            src_ptr[active_channel]   <= src_ptr[active_channel] + 1'b1;
-            dst_ptr[active_channel]   <= dst_ptr[active_channel] + 1'b1;
-            remaining[active_channel] <= remaining[active_channel] - 1'b1;
+          if (dma.ack && dma.we) begin
+            // This DMA transfers one 32-bit beat per transaction.
+            src_ptr[current_channel]   <= src_ptr[current_channel] + 32'd4;
+            dst_ptr[current_channel]   <= dst_ptr[current_channel] + 32'd4;
+            remaining[current_channel] <= remaining[current_channel] - 1'b1;
 
-            if (remaining[active_channel] == 32'd1) begin
-              dma_busy[active_channel]  <= 1'b0;
-              dma_done[active_channel]  <= 1'b1;
-              dma_error[active_channel] <= 1'b0;
+            if (remaining[current_channel] == 32'd1) begin
+              dma_busy[current_channel]  <= 1'b0;
+              dma_done[current_channel]  <= 1'b1;
+              dma_error[current_channel] <= 1'b0;
               state                    <= DMA_DONE;
             end else begin
               state <= DMA_READ;
             end
-          end else if (dma.err) begin
-            dma_busy[active_channel]  <= 1'b0;
-            dma_done[active_channel]  <= 1'b0;
-            dma_error[active_channel] <= 1'b1;
+          end else if (dma.err && dma.we) begin
+            dma_busy[current_channel]  <= 1'b0;
+            dma_done[current_channel]  <= 1'b0;
+            dma_error[current_channel] <= 1'b1;
             state                    <= DMA_DONE;
           end
         end
@@ -292,14 +292,9 @@ module bifrost_wb_dma #(
           dma.stb     <= 1'b0;
           dma.we      <= 1'b0;
 
-          if (!start_req[active_channel]) begin
-            logic [3:0] rr_after;
-            dma_busy[active_channel] <= 1'b0;
-            rr_after = active_channel + 4'd1;
-            if (rr_after >= 4'd8) begin
-              rr_after = '0;
-            end
-            rr_cursor <= rr_after[2:0];
+          if (!start_req[current_channel]) begin
+            dma_busy[current_channel] <= 1'b0;
+            rr_cursor <= (current_channel == 3'd7) ? 3'd0 : (current_channel + 3'd1);
             state     <= DMA_IDLE;
           end
         end

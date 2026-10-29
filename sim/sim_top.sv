@@ -108,6 +108,16 @@ module sim_top;
     end
   endtask
 
+  task automatic expect_word(
+    input int unsigned word_index,
+    input logic [31:0] expected,
+    input string name
+  );
+    if (u_src_mem.mem[word_index] !== expected) begin
+      $fatal(1, "%s mismatch at mem[%0d]: got=0x%08x expected=0x%08x", name, word_index, u_src_mem.mem[word_index], expected);
+    end
+  endtask
+
   initial begin
     repeat (2) @(posedge clk);
     rst = 1'b0;
@@ -125,8 +135,28 @@ module sim_top;
     dma_start_channel(2, 1'b1);
 
     wait (intr);
+    wait (u_dma.dma_done[0] && u_dma.dma_done[1] && u_dma.dma_done[2]);
     $display("DMA interrupt asserted after completion of an enabled channel");
     $display("ch0 status=%0d ch1 status=%0d ch2 status=%0d", u_dma.reg_status[0], u_dma.reg_status[1], u_dma.reg_status[2]);
+
+    if (u_dma.dma_error[0] || u_dma.dma_error[1] || u_dma.dma_error[2]) begin
+      $fatal(1, "Unexpected DMA error flag asserted");
+    end
+
+    // ch0: src 0x00..0x0C -> dst 0x40..0x4C (4 words)
+    expect_word(16, 32'd101, "ch0 dst[0]");
+    expect_word(17, 32'd202, "ch0 dst[1]");
+    expect_word(18, 32'd303, "ch0 dst[2]");
+    expect_word(19, 32'd404, "ch0 dst[3]");
+
+    // ch1: src 0x08..0x10 -> dst 0x80..0x88 (3 words)
+    expect_word(32, 32'd303, "ch1 dst[0]");
+    expect_word(33, 32'd404, "ch1 dst[1]");
+    expect_word(34, 32'd505, "ch1 dst[2]");
+
+    // ch2: src 0x10..0x14 -> dst 0xC0..0xC4 (2 words)
+    expect_word(48, 32'd505, "ch2 dst[0]");
+    expect_word(49, 32'd606, "ch2 dst[1]");
 
     repeat (20) @(posedge clk);
     $display("DMA multi-channel test complete");
@@ -147,40 +177,45 @@ module wb_ram #(
   wishbone_interface.slave wb
 );
 
+  localparam int INDEX_WIDTH = $clog2(DEPTH);
   logic [31:0] mem [0:DEPTH-1];
+  logic [31:0] word_idx;
+  logic req_valid;
 
   initial begin
+    for (int i = 0; i < DEPTH; i++) begin
+      mem[i] = 32'd0;
+    end
     mem[0] = 32'd101;
     mem[1] = 32'd202;
     mem[2] = 32'd303;
     mem[3] = 32'd404;
+    mem[4] = 32'd505;
+    mem[5] = 32'd606;
   end
 
-  always_ff @(posedge clk) 
-  begin
-
+  always_comb begin
     if (rst) begin
-      wb.ack <= 1'b0;
-      wb.err <= 1'b0;
-      wb.dat_miso <= '0;
-
+      wb.ack = 1'b0;
+      wb.err = 1'b0;
+      wb.dat_miso = '0;
     end else begin
-      wb.ack <= 1'b0;
-      wb.err <= 1'b0;
-
-      if (wb.cyc && wb.stb && wb.adr < DEPTH) begin
-        wb.ack <= 1'b1;
-        if (wb.we) begin
-          mem[wb.adr[15:2]] <= wb.dat_mosi;
-        end 
-        else begin
-          wb.dat_miso <= mem[wb.adr[15:2]];
-        end
-      end else begin
-        wb.err <= 1'b1;
-      end
+      wb.ack = wb.cyc && wb.stb && req_valid;
+      wb.err = wb.cyc && wb.stb && !req_valid;
+      wb.dat_miso = (req_valid) ? mem[word_idx[INDEX_WIDTH-1:0]] : '0;
     end
+  end
 
+  always_comb begin
+    word_idx = (wb.adr >> 2);
+    req_valid = (word_idx < DEPTH);
+  end
+
+  always_ff @(posedge clk)
+  begin
+    if (!rst && wb.cyc && wb.stb && wb.we && req_valid) begin
+      mem[word_idx[INDEX_WIDTH-1:0]] <= wb.dat_mosi;
+    end
   end
 
 endmodule
